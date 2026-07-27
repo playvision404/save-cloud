@@ -1,11 +1,14 @@
-use client";
+"use client";
 
 import { useCallback, useEffect, useState } from "react";
 import type { ChangeEvent } from "react";
 import { supabase } from "@/lib/supabase";
 import { detectSave } from "@/lib/saveDetector";
 
-type Props = { gameId: string; gameName: string };
+type Props = {
+  gameId: string;
+  gameName: string;
+};
 
 type Save = {
   id: string;
@@ -25,34 +28,64 @@ export default function SlotView({ gameId, gameName }: Props) {
 
   const loadSaves = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return setSaves([]);
 
-    const { data } = await supabase.from("saves").select("*").eq("game_id", gameId).eq("user_id", user.id).order("slot");
+    if (!user) {
+      setSaves([]);
+      return;
+    }
+
+    const { data, error } = await supabase
+      .from("saves")
+      .select("*")
+      .eq("game_id", gameId)
+      .eq("user_id", user.id)
+      .order("slot");
+
+    if (error) {
+      console.error(error);
+      return;
+    }
+
     setSaves(data ?? []);
   }, [gameId]);
 
-  useEffect(() => { loadSaves(); }, [loadSaves]);
+  useEffect(() => {
+    loadSaves();
+  }, [loadSaves]);
 
   async function uploadSave(event: ChangeEvent<HTMLInputElement>, slot: number) {
     const file = event.target.files?.[0];
     if (!file) return;
 
     const detection = await detectSave(file);
+
     if (detection.gameId && detection.confidence >= 80 && detection.gameId !== gameId) {
       alert(`Diese Datei sieht nach ${detection.gameName} aus.`);
       return;
     }
 
     const { data: { user } } = await supabase.auth.getUser();
-    if (!user) return alert("Login erforderlich");
+
+    if (!user) {
+      alert("Login erforderlich");
+      return;
+    }
 
     setUploadingSlot(slot);
+
     try {
       const filePath = `${user.id}/${gameId}/slot-${slot}-${file.name}`;
-      const { error } = await supabase.storage.from("saves").upload(filePath, file, { upsert: true });
-      if (error) return alert(error.message);
 
-      await supabase.from("saves").insert({
+      const { error: uploadError } = await supabase.storage
+        .from("saves")
+        .upload(filePath, file, { upsert: true });
+
+      if (uploadError) {
+        alert(uploadError.message);
+        return;
+      }
+
+      const { error: databaseError } = await supabase.from("saves").insert({
         user_id: user.id,
         game_id: gameId,
         slot,
@@ -63,8 +96,13 @@ export default function SlotView({ gameId, gameName }: Props) {
         detected_platform: detection.platform,
         detected_format: detection.format,
         detection_confidence: detection.confidence,
-        detection_reasons: detection.reasons
+        detection_reasons: detection.reasons,
       });
+
+      if (databaseError) {
+        alert(databaseError.message);
+        return;
+      }
 
       await loadSaves();
     } finally {
@@ -72,5 +110,37 @@ export default function SlotView({ gameId, gameName }: Props) {
     }
   }
 
-  return <div className="mt-8 border rounded p-5"><h2 className="text-2xl font-bold">{gameName}</h2>{[1,2].map(slot => { const save=saves.find(s=>s.slot===slot); return <div key={slot} className="border rounded p-4 mt-4"><h3>Slot {slot}</h3>{save ? <><p>{save.file_name}</p><p>🎮 {save.detected_platform ?? "unbekannt"}</p><p>💾 {save.detected_format ?? "-"}</p><p>🔍 {save.detection_confidence ?? 0}%</p></> : <label className="cursor-pointer">Save hochladen<input hidden type="file" onChange={e=>uploadSave(e,slot)}/></label>}</div>})}</div>;
+  return (
+    <div className="mt-8 border rounded p-5">
+      <h2 className="text-2xl font-bold">{gameName}</h2>
+
+      {[1, 2].map((slot) => {
+        const save = saves.find((item) => item.slot === slot);
+
+        return (
+          <div key={slot} className="border rounded p-4 mt-4">
+            <h3 className="font-bold">Slot {slot}</h3>
+
+            {save ? (
+              <>
+                <p>{save.file_name}</p>
+                <p>🎮 {save.detected_platform ?? "unbekannt"}</p>
+                <p>💾 {save.detected_format ?? "-"}</p>
+                <p>🔍 {save.detection_confidence ?? 0}%</p>
+              </>
+            ) : (
+              <label className="cursor-pointer">
+                {uploadingSlot === slot ? "Lädt hoch..." : "Save hochladen"}
+                <input
+                  hidden
+                  type="file"
+                  onChange={(event) => uploadSave(event, slot)}
+                />
+              </label>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
 }
