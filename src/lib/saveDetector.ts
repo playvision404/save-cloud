@@ -5,6 +5,8 @@ export type DetectedSave = {
   gameName: string | null;
   platform: string | null;
   confidence: number;
+  format: string;
+  reasons: string[];
 };
 
 type GameRecord = {
@@ -18,92 +20,69 @@ type GameRecord = {
 
 function getFileExtension(fileName: string) {
   const parts = fileName.split(".");
+  return parts.length > 1 ? `.${parts.at(-1)?.toLowerCase()}` : "";
+}
 
-  if (parts.length < 2) {
-    return "";
-  }
-
-  return `.${parts.at(-1)?.toLowerCase() ?? ""}`;
+function normalize(value: string) {
+  return value.toLowerCase().replaceAll("_", " ").replaceAll("-", " ");
 }
 
 export async function detectSave(file: File): Promise<DetectedSave> {
-  const fileName = file.name.toLowerCase();
   const extension = getFileExtension(file.name);
-  const fileSize = file.size;
-
-  console.log("Analysiere Save:");
-  console.log("Datei:", file.name);
-  console.log("Größe:", fileSize);
-  console.log("Endung:", extension);
+  const fileName = normalize(file.name);
+  const reasons: string[] = [];
 
   const { data, error } = await supabase
     .from("games")
-    .select(`
-      id,
-      name,
-      platform,
-      aliases,
-      file_extensions,
-      save_sizes
-    `);
+    .select("id,name,platform,aliases,file_extensions,save_sizes");
 
   if (error || !data) {
-    console.log("Fehler beim Laden der Spiele:", error);
-
     return {
       gameId: null,
       gameName: null,
       platform: null,
       confidence: 0,
+      format: extension,
+      reasons: ["Spieldaten konnten nicht geladen werden"]
     };
   }
 
-  const games = data as GameRecord[];
-  let bestGame: GameRecord | null = null;
+  let best: GameRecord | null = null;
   let bestScore = 0;
+  let bestReasons: string[] = [];
 
-  for (const game of games) {
+  for (const game of data as GameRecord[]) {
     let score = 0;
+    const currentReasons: string[] = [];
 
     if (game.file_extensions?.includes(extension)) {
       score += 30;
+      currentReasons.push("Dateiformat passt");
     }
 
-    if (game.save_sizes?.includes(fileSize)) {
+    if (game.save_sizes?.includes(file.size)) {
       score += 40;
+      currentReasons.push("Dateigröße passt exakt");
     }
 
-    const cleanFileName = fileName.replaceAll("_", " ").replaceAll("-", " ");
-
-    if (
-      game.aliases?.some((alias) =>
-        cleanFileName.includes(alias.toLowerCase())
-      )
-    ) {
+    if (game.aliases?.some(alias => fileName.includes(normalize(alias)))) {
       score += 30;
+      currentReasons.push("Dateiname enthält Spielnamen");
     }
-
-    console.log(game.name, "Score:", score);
 
     if (score > bestScore) {
       bestScore = score;
-      bestGame = game;
+      best = game;
+      bestReasons = currentReasons;
     }
   }
 
-  if (!bestGame) {
-    return {
-      gameId: null,
-      gameName: null,
-      platform: null,
-      confidence: 0,
-    };
-  }
-
   return {
-    gameId: bestGame.id,
-    gameName: bestGame.name,
-    platform: bestGame.platform,
+    gameId: best?.id ?? null,
+    gameName: best?.name ?? null,
+    platform: best?.platform ?? null,
     confidence: bestScore,
+    format: extension,
+    reasons: bestReasons
   };
 }
