@@ -27,10 +27,32 @@ function normalize(value: string) {
   return value.toLowerCase().replaceAll("_", " ").replaceAll("-", " ");
 }
 
+async function analyzeBinary(file: File) {
+  const buffer = await file.slice(0, 256).arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+  const text = new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+
+  const reasons: string[] = [];
+  let bonus = 0;
+
+  if (text.toLowerCase().includes("pokemon")) {
+    bonus += 15;
+    reasons.push("Pokemon-Metadaten im Dateiinhalt gefunden");
+  }
+
+  if (bytes.length >= 256) {
+    bonus += 5;
+    reasons.push("Binärstruktur konnte analysiert werden");
+  }
+
+  return { bonus, reasons };
+}
+
 export async function detectSave(file: File): Promise<DetectedSave> {
   const extension = getFileExtension(file.name);
   const fileName = normalize(file.name);
-  const reasons: string[] = [];
+  const binary = await analyzeBinary(file);
+  const reasons: string[] = [...binary.reasons];
 
   const { data, error } = await supabase
     .from("games")
@@ -48,12 +70,12 @@ export async function detectSave(file: File): Promise<DetectedSave> {
   }
 
   let best: GameRecord | null = null;
-  let bestScore = 0;
-  let bestReasons: string[] = [];
+  let bestScore = binary.bonus;
+  let bestReasons = reasons;
 
   for (const game of data as GameRecord[]) {
-    let score = 0;
-    const currentReasons: string[] = [];
+    let score = binary.bonus;
+    const currentReasons = [...binary.reasons];
 
     if (game.file_extensions?.includes(extension)) {
       score += 30;
@@ -81,7 +103,7 @@ export async function detectSave(file: File): Promise<DetectedSave> {
     gameId: best?.id ?? null,
     gameName: best?.name ?? null,
     platform: best?.platform ?? null,
-    confidence: bestScore,
+    confidence: Math.min(bestScore, 100),
     format: extension,
     reasons: bestReasons
   };
