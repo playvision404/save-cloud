@@ -1,0 +1,107 @@
+[
+  {
+    "name": "Pokémon Emerald",
+    "platform": "Game Boy Advance",
+    "aliases": [
+      "pokemon emerald",
+      "pokemon smaragd",
+      "emerald",
+      "pokeemerald"
+    ],
+    "file_extensions": [
+      ".sav"
+    ],
+    "save_sizes": [
+      65536
+    ]
+  },
+  {
+    "name": "Pokémon Rubin",
+    "platform": "Game Boy Advance",
+    "aliases": [
+      "pokemon ruby",
+      "pokemon rubin",
+      "ruby"
+    ],
+    "file_extensions": [
+      ".sav"
+    ],
+    "save_sizes": [
+      65536
+    ]
+  },
+  {
+    "name": "Pokémon Saphir",
+    "platform": "Game Boy Advance",
+    "aliases": [
+      "pokemon sapphire",
+      "pokemon saphir",
+      "sapphire"
+    ],
+    "file_extensions": [
+      ".sav"
+    ],
+    "save_sizes": [
+      65536
+    ]
+  },
+  {
+    "name": "Pokémon Feuerrot",
+    "platform": "Game Boy Advance",
+    "aliases": [
+      "pokemon firered",
+      "pokemon feuerrot",
+      "fire red"
+    ],
+    "file_extensions": [
+      ".sav"
+    ],
+    "save_sizes": [
+      65536
+    ]
+  },
+  {
+    "name": "Pokémon Blattgrün",
+    "platform": "Game Boy Advance",
+    "aliases": [
+      "pokemon leafgreen",
+      "pokemon blattgruen",
+      "leaf green"
+    ],
+    "file_extensions": [
+      ".sav"
+    ],
+    "save_sizes": [
+      65536
+    ]
+  },
+  {
+    "name": "The Legend of Zelda: The Minish Cap",
+    "platform": "Game Boy Advance",
+    "aliases": [
+      "minish cap",
+      "zelda minish cap",
+      "zelda minish"
+    ],
+    "file_extensions": [
+      ".sav"
+    ],
+    "save_sizes": [
+      65536
+    ]
+  },
+  {
+    "name": "Mario Kart Super Circuit",
+    "platform": "Game Boy Advance",
+    "aliases": [
+      "mario kart gba",
+      "super circuit"
+    ],
+    "file_extensions": [
+      ".sav"
+    ],
+    "save_sizes": [
+      65536
+    ]
+  }
+]
