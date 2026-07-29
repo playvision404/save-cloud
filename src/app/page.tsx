@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
 
 import AuthStatus from "@/components/AuthStatus";
@@ -10,6 +11,28 @@ export default function Home() {
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [user, setUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    let ignore = false;
+
+    supabase.auth.getUser().then(({ data }) => {
+      if (!ignore) {
+        setUser(data.user);
+      }
+    });
+
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+    });
+
+    return () => {
+      ignore = true;
+      subscription.unsubscribe();
+    };
+  }, []);
 
 
   async function register() {
@@ -117,7 +140,13 @@ export default function Home() {
 
 
 
-      <SaveManager />
+      {user ? (
+        <SaveManager />
+      ) : (
+        <p className="mt-10 text-gray-600">
+          Bitte melde dich an, um deine Save-Cloud zu sehen.
+        </p>
+      )}
 
 
     </main>
