@@ -10,10 +10,14 @@ getroffen werden.
 
 ## Wichtige Hinweise, bevor du Code änderst
 
-- **Kein SQL-Schema im Repo.** Alles zu Tabellen/Spalten in `README.md` ist
-  aus den Supabase-Client-Queries im Code abgeleitet, nicht aus einer
-  offiziellen Migration. Bei Unsicherheit im Zweifel den Nutzer fragen statt
-  zu raten.
+- **`supabase/migrations/` enthält nur die Migrationen, die über diese
+  Sessions liefen** (Versionierung, Storage-Update-Policy). Es gibt
+  mindestens eine weitere Migration (`add_save_detection_profiles`), die
+  direkt in Supabase Studio erstellt wurde und **nicht** in diesem Repo
+  liegt — der DB-Stand ist also der eigentliche Wahrheitsanker, nicht die
+  Dateien hier. Bei Unsicherheit über das aktuelle Schema den
+  Supabase-Connector nutzen (`list_migrations`, `execute_sql` gegen
+  `information_schema`), nicht raten.
 - **`src/components/GameList.tsx` ist aktuell toter Code** – nirgends
   importiert, nutzt teils Felder (`uploaded_at`, `games.icon`), die sonst im
   Projekt nicht vorkommen. Vor Wiederverwendung/Löschung mit dem Nutzer

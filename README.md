@@ -109,22 +109,36 @@ produktivem Einsatz gegen den echten Supabase-Stand geprüft/ergänzt werden
 | `detected_platform` / `detected_format` / `detection_confidence` / `detection_reasons` | wie bei `saves` |
 | `created_at` | timestamptz, Default `now()` |
 
-Die eigentliche SQL-Migration liegt unter
-`supabase/migrations/0001_save_versions_and_updated_at.sql` und muss einmalig
-im Supabase-Projekt ausgeführt werden (SQL Editor oder Supabase-CLI). Sie
-legt auch RLS-Policies für `save_versions` an — falls `saves` selbst noch
-keine RLS-Policies hat, unbedingt analog nachziehen (siehe Kommentar am
-Ende der Migration).
+Die SQL-Migrationen liegen unter `supabase/migrations/` und sind bereits
+live auf dem Supabase-Projekt angewendet (Stand: aktuelles Repo).
 
-**Offene Punkte, die noch geklärt/umgesetzt werden müssen:**
-- Unique Constraint auf `(user_id, game_id, slot)`, damit pro Nutzer/Spiel/Slot
-  nur eine Zeile existiert (Code geht aktuell davon aus, verlässt sich aber
-  nicht auf einen DB-Constraint)
-- RLS-Policies auf `saves`, damit Nutzer nur ihre eigenen Zeilen sehen/ändern
-  können (aktuell nur durch `.eq("user_id", user.id)` im Client-Code
-  abgesichert – das ersetzt keine RLS!)
-- Storage-Policies auf dem `saves`-Bucket (nur eigener Ordner `user.id/...`
-  lesbar/schreibbar)
+**Tatsächlich verifizierter DB-Stand (direkt per Supabase-Connector geprüft,
+nicht nur aus dem Code geraten):**
+- `saves` hat einen `UNIQUE (user_id, game_id, slot)`-Constraint und
+  `CHECK (slot >= 1 AND slot <= 2)` — die 2-Slot-Grenze ist also auch auf
+  DB-Ebene erzwungen, nicht nur im Frontend.
+- `saves`, `games`, `save_versions`, `subscriptions` haben RLS mit
+  Policies, die Zugriff auf `auth.uid() = user_id` beschränken.
+  Ausnahme: `games` hat zusätzlich eine öffentliche Lese-Policy (jede:r darf
+  alle Spiele sehen, nicht nur eigene) — vermutlich beabsichtigt, da
+  `games.json` zentral importierte Spiele enthält.
+- `platforms` hat RLS aktiviert, aber **keine einzige Policy** → aktuell für
+  niemanden außer der Service-Role lesbar. Betrifft aktuell keinen
+  Code-Pfad (das Frontend liest Plattformen über `games.platform`, nicht
+  über die `platforms`-Tabelle direkt), aber falls das mal gebraucht wird:
+  Policy nachziehen.
+- Storage-Bucket `saves` ist privat, mit Policies für SELECT/INSERT/DELETE
+  **und UPDATE** (Update-Policy war ursprünglich vergessen — ohne sie
+  schlägt jeder `upload(..., { upsert: true })` auf einen bereits
+  existierenden Pfad fehl, z. B. "Ersetzen" eines Slots oder das
+  Zurückschreiben beim Wiederherstellen. Siehe
+  `supabase/migrations/0002_storage_objects_allow_update.sql`).
+- Es existiert außerdem eine `save_detection_profiles`-Tabelle (Migration
+  `add_save_detection_profiles`, nicht in diesem Repo enthalten, offenbar
+  direkt in Supabase Studio erstellt) und eine `subscriptions`-Tabelle mit
+  `tier`/`max_slots` (Default: `free`/`2`) — beide existieren in der DB,
+  werden aber vom aktuellen Frontend-Code **nicht** verwendet. Sieht nach
+  angefangenen, nicht abgeschlossenen Features aus.
 
 ## Entwicklung
 
