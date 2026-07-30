@@ -47,6 +47,12 @@ getroffen werden.
   Ignore-Flag-Pattern umsetzen (Beispiel: `SlotView.tsx`), nicht eine
   `useCallback`-Funktion direkt im Effekt aufrufen und darin `setState`
   ausführen — das wird als Fehler geflaggt.
+- **Upload-Logik lebt zentral in `src/lib/saveUpload.ts`**, nicht in den
+  Komponenten. `SlotView.tsx` und `QuickUpload.tsx` nutzen beide
+  `performUpload()`/`snapshotToHistory()`/`fetchSaves()` von dort. Eine
+  neue Upload-Stelle (z. B. Batch-Import) sollte diese Funktionen
+  wiederverwenden statt Storage-/DB-Calls erneut selbst zu schreiben —
+  sonst laufen Verlauf/Konflikt-Handling wieder auseinander.
 - Vor dem Abschluss einer Änderung immer `npm run lint` und
   `npx tsc --noEmit` laufen lassen; beides muss sauber durchlaufen.
 

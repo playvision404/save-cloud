@@ -6,6 +6,7 @@ import { supabase } from "@/lib/supabase";
 import PlatformSelector from "@/components/PlatformSelector";
 import GameSelector from "@/components/GameSelector";
 import SlotView from "@/components/SlotView";
+import QuickUpload from "@/components/QuickUpload";
 
 
 type Game = {
@@ -74,6 +75,12 @@ export default function SaveManager() {
   }
 
 
+  function handleQuickUploaded(game: { id: string; name: string; platform: string }) {
+    setSelectedPlatform(game.platform);
+    setSelectedGame({ id: game.id, name: game.name, platform: game.platform });
+  }
+
+
 
 
   return (
@@ -84,6 +91,11 @@ export default function SaveManager() {
         Meine Save Cloud
       </h1>
 
+      <QuickUpload onUploaded={handleQuickUploaded} />
+
+      <h2 className="text-2xl font-bold mt-10 mb-2">
+        Oder über Konsole/Spiel durchsuchen
+      </h2>
 
       <PlatformSelector
         platforms={platforms}

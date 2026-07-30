@@ -4,42 +4,19 @@ import { useEffect, useState } from "react";
 import type { ChangeEvent } from "react";
 import { supabase } from "@/lib/supabase";
 import { detectSave } from "@/lib/saveDetector";
+import {
+  MAX_VERSIONS_PER_SLOT,
+  fetchSaves,
+  fetchVersions,
+  performUpload,
+  snapshotToHistory,
+} from "@/lib/saveUpload";
+import type { Save, SaveVersion } from "@/lib/saveUpload";
 
 type Props = {
   gameId: string;
   gameName: string;
 };
-
-type Save = {
-  id: string;
-  slot: number;
-  file_path: string;
-  file_size: number;
-  file_name?: string;
-  detected_platform?: string;
-  detected_format?: string;
-  detection_confidence?: number;
-  detection_reasons?: string[];
-  updated_at?: string;
-};
-
-type SaveVersion = {
-  id: string;
-  save_id: string;
-  slot: number;
-  file_path: string;
-  file_size: number;
-  file_name?: string;
-  detected_platform?: string;
-  detected_format?: string;
-  detection_confidence?: number;
-  detection_reasons?: string[];
-  created_at: string;
-};
-
-// Wie viele alte Stände pro Slot behalten werden, bevor der älteste
-// automatisch gelöscht wird (Speicherplatz ist begrenzt).
-const MAX_VERSIONS_PER_SLOT = 5;
 
 export default function SlotView({ gameId, gameName }: Props) {
   const [saves, setSaves] = useState<Save[]>([]);
@@ -50,36 +27,24 @@ export default function SlotView({ gameId, gameName }: Props) {
   const [versionsBySlot, setVersionsBySlot] = useState<Record<number, SaveVersion[]>>({});
   const [loadingHistorySlot, setLoadingHistorySlot] = useState<number | null>(null);
 
-  async function fetchSaves(currentGameId: string) {
+  async function loadSaves(currentGameId: string) {
     const { data: { user } } = await supabase.auth.getUser();
-
-    if (!user) {
-      return [];
-    }
-
-    const { data, error } = await supabase
-      .from("saves")
-      .select("*")
-      .eq("game_id", currentGameId)
-      .eq("user_id", user.id)
-      .order("slot");
-
-    if (error) {
-      console.error(error);
-      return [];
-    }
-
-    return data ?? [];
+    if (!user) return [];
+    return fetchSaves(currentGameId, user.id);
   }
 
   useEffect(() => {
     let ignore = false;
 
-    fetchSaves(gameId).then((result) => {
+    async function run() {
+      const { data: { user } } = await supabase.auth.getUser();
+      const result = user ? await fetchSaves(gameId, user.id) : [];
       if (!ignore) {
         setSaves(result);
       }
-    });
+    }
+
+    run();
 
     return () => {
       ignore = true;
@@ -87,23 +52,8 @@ export default function SlotView({ gameId, gameName }: Props) {
   }, [gameId]);
 
   async function reloadSaves() {
-    const result = await fetchSaves(gameId);
+    const result = await loadSaves(gameId);
     setSaves(result);
-  }
-
-  async function fetchVersions(saveId: string) {
-    const { data, error } = await supabase
-      .from("save_versions")
-      .select("*")
-      .eq("save_id", saveId)
-      .order("created_at", { ascending: false });
-
-    if (error) {
-      console.error(error);
-      return [];
-    }
-
-    return data ?? [];
   }
 
   async function toggleHistory(save: Save) {
@@ -121,51 +71,6 @@ export default function SlotView({ gameId, gameName }: Props) {
     } finally {
       setLoadingHistorySlot(null);
     }
-  }
-
-  // Sichert den aktuell aktiven Storage-Stand eines Slots als Verlaufs-
-  // Eintrag, BEVOR er überschrieben wird, und löscht überzählige alte
-  // Versionen (mehr als MAX_VERSIONS_PER_SLOT werden nicht behalten).
-  async function snapshotToHistory(existing: Save) {
-    const versionPath = `${existing.file_path}/versions/${Date.now()}`;
-
-    const { error: copyError } = await supabase.storage
-      .from("saves")
-      .copy(existing.file_path, versionPath);
-
-    if (copyError) {
-      throw new Error(`Verlauf konnte nicht gesichert werden: ${copyError.message}`);
-    }
-
-    const { data: { user } } = await supabase.auth.getUser();
-
-    const { error: insertError } = await supabase.from("save_versions").insert({
-      save_id: existing.id,
-      user_id: user?.id,
-      game_id: gameId,
-      slot: existing.slot,
-      file_path: versionPath,
-      file_size: existing.file_size,
-      file_name: existing.file_name,
-      detected_platform: existing.detected_platform,
-      detected_format: existing.detected_format,
-      detection_confidence: existing.detection_confidence,
-      detection_reasons: existing.detection_reasons,
-    });
-
-    if (insertError) {
-      throw new Error(`Verlauf konnte nicht gesichert werden: ${insertError.message}`);
-    }
-
-    const allVersions = await fetchVersions(existing.id);
-    const surplus = allVersions.slice(MAX_VERSIONS_PER_SLOT);
-
-    for (const old of surplus) {
-      await supabase.storage.from("saves").remove([old.file_path]);
-      await supabase.from("save_versions").delete().eq("id", old.id);
-    }
-
-    return allVersions.slice(0, MAX_VERSIONS_PER_SLOT);
   }
 
   async function uploadSave(event: ChangeEvent<HTMLInputElement>, slot: number) {
@@ -232,53 +137,24 @@ export default function SlotView({ gameId, gameName }: Props) {
     setUploadingSlot(slot);
 
     try {
-      // Stabiler Pfad pro Slot (ohne Originaldateiname), damit ein erneuter
-      // Upload die alte Datei im Storage sauber überschreibt statt eine
-      // zusätzliche, verwaiste Datei zu erzeugen.
-      const filePath = `${user.id}/${gameId}/slot-${slot}`;
+      const result = await performUpload({
+        file,
+        userId: user.id,
+        gameId,
+        gameName,
+        slot,
+        detection,
+        freshExisting,
+      });
+
+      if (!result.ok) {
+        alert(result.error);
+        return;
+      }
 
       if (freshExisting) {
-        try {
-          const versions = await snapshotToHistory(freshExisting);
-          setVersionsBySlot((prev) => ({ ...prev, [slot]: versions }));
-        } catch (snapshotError) {
-          alert((snapshotError as Error).message);
-          return;
-        }
-      }
-
-      const { error: uploadError } = await supabase.storage
-        .from("saves")
-        .upload(filePath, file, { upsert: true });
-
-      if (uploadError) {
-        alert(uploadError.message);
-        return;
-      }
-
-      const payload = {
-        user_id: user.id,
-        game_id: gameId,
-        slot,
-        file_path: filePath,
-        file_size: file.size,
-        file_name: file.name,
-        note: gameName,
-        detected_platform: detection.platform,
-        detected_format: detection.format,
-        detection_confidence: detection.confidence,
-        detection_reasons: detection.reasons,
-      };
-
-      // Existiert bereits ein Save für diesen Slot, wird er aktualisiert
-      // (per ID) statt einen zweiten Datenbankeintrag anzulegen.
-      const { error: databaseError } = freshExisting
-        ? await supabase.from("saves").update(payload).eq("id", freshExisting.id)
-        : await supabase.from("saves").insert(payload);
-
-      if (databaseError) {
-        alert(databaseError.message);
-        return;
+        const versions = await fetchVersions(freshExisting.id);
+        setVersionsBySlot((prev) => ({ ...prev, [slot]: versions }));
       }
 
       await reloadSaves();
@@ -303,7 +179,7 @@ export default function SlotView({ gameId, gameName }: Props) {
     try {
       // Aktuellen Stand zuerst sichern, damit beim Wiederherstellen
       // nichts verloren geht.
-      const versions = await snapshotToHistory(save);
+      const versions = await snapshotToHistory(save, gameId);
       setVersionsBySlot((prev) => ({ ...prev, [save.slot]: versions }));
 
       const { data: blob, error: downloadError } = await supabase.storage

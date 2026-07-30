@@ -42,6 +42,20 @@ kann sie von überall wieder herunterladen.
   eine Konfidenz (0–100 %) zu berechnen. Bei einer eindeutigen
   Fehlerkennung (≥80 % Konfidenz, aber falsches Spiel) wird der Upload
   mit einer Warnung abgebrochen.
+- **Schnell-Upload** (`src/components/QuickUpload.tsx`): eigenes Upload-Feld
+  oberhalb der klassischen Konsole→Spiel-Auswahl. Datei per Klick oder
+  Drag & Drop auswählen, Erkennung schlägt automatisch ein Spiel vor
+  (ab `AUTO_SELECT_CONFIDENCE`, aktuell 40 %). Der Vorschlag lässt sich
+  über eine Suchleiste (Name/Plattform/Alias) manuell korrigieren oder
+  ganz ohne Erkennung ein Spiel auswählen. Anschließend Slot wählen —
+  dieselbe Verlaufs-/Überschreib-Logik wie in `SlotView.tsx` kommt zum
+  Einsatz (beide teilen sich `src/lib/saveUpload.ts`). Nach dem Upload kann
+  optional direkt zur Konsole/Spiel-Ansicht gesprungen werden.
+- `src/lib/saveUpload.ts` bündelt die Upload-/Verlaufs-Logik
+  (`fetchSaves`, `fetchSaveForSlot`, `snapshotToHistory`, `performUpload`),
+  die von `SlotView.tsx` und `QuickUpload.tsx` gemeinsam genutzt wird.
+  Neue Upload-Einstiegspunkte sollten diese Funktionen wiederverwenden statt
+  eigene Kopien der Logik zu bauen.
 - `src/components/GameList.tsx` existiert im Code, ist aber aktuell
   **nirgends eingebunden** (kein Import in `page.tsx`/`SaveManager.tsx`).
   Gedacht offenbar als "alle meine Saves auf einen Blick"-Übersicht mit
