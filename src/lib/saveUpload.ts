@@ -196,6 +196,14 @@ export async function performUpload({
     : await supabase.from("saves").insert(payload);
 
   if (databaseError) {
+    if (databaseError.code === "23505") {
+      return {
+        ok: false,
+        error:
+          "Dieser Slot wurde gerade eben von einem anderen Gerät belegt. " +
+          "Bitte Seite neu laden und erneut versuchen.",
+      };
+    }
     return { ok: false, error: databaseError.message };
   }
 

@@ -53,6 +53,10 @@ getroffen werden.
   neue Upload-Stelle (z. B. Batch-Import) sollte diese Funktionen
   wiederverwenden statt Storage-/DB-Calls erneut selbst zu schreiben —
   sonst laufen Verlauf/Konflikt-Handling wieder auseinander.
+- **Fehlermeldungen laufen über `useToast()` aus `ToastProvider.tsx`**,
+  nicht über `alert()`. Neue Fehlerfälle sollten diesen Hook nutzen.
+  `confirm()` für Ja/Nein-Entscheidungen (Löschen, Überschreiben) bleibt
+  bewusst nativ — dafür ist das Toast-System nicht gedacht.
 - Vor dem Abschluss einer Änderung immer `npm run lint` und
   `npx tsc --noEmit` laufen lassen; beides muss sauber durchlaufen.
 

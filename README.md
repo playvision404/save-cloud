@@ -56,6 +56,12 @@ kann sie von überall wieder herunterladen.
   die von `SlotView.tsx` und `QuickUpload.tsx` gemeinsam genutzt wird.
   Neue Upload-Einstiegspunkte sollten diese Funktionen wiederverwenden statt
   eigene Kopien der Logik zu bauen.
+- **Fehler-/Erfolgsmeldungen** laufen über ein leichtgewichtiges Toast-System
+  (`src/components/ToastProvider.tsx`, im Root-Layout eingebunden). Alle
+  Komponenten nutzen `useToast()` statt `alert()`. Bestätigungs-Dialoge
+  ("wirklich löschen?", "wirklich überschreiben?") bleiben bewusst als
+  natives `confirm()` — das sind Ja/Nein-Entscheidungen, keine reinen
+  Meldungen.
 - `src/components/GameList.tsx` existiert im Code, ist aber aktuell
   **nirgends eingebunden** (kein Import in `page.tsx`/`SaveManager.tsx`).
   Gedacht offenbar als "alle meine Saves auf einen Blick"-Übersicht mit
@@ -136,11 +142,11 @@ nicht nur aus dem Code geraten):**
   Ausnahme: `games` hat zusätzlich eine öffentliche Lese-Policy (jede:r darf
   alle Spiele sehen, nicht nur eigene) — vermutlich beabsichtigt, da
   `games.json` zentral importierte Spiele enthält.
-- `platforms` hat RLS aktiviert, aber **keine einzige Policy** → aktuell für
-  niemanden außer der Service-Role lesbar. Betrifft aktuell keinen
-  Code-Pfad (das Frontend liest Plattformen über `games.platform`, nicht
-  über die `platforms`-Tabelle direkt), aber falls das mal gebraucht wird:
-  Policy nachziehen.
+- `platforms` hatte RLS aktiviert, aber **keine einzige Policy** → war
+  dadurch für niemanden außer der Service-Role lesbar. Betrifft keinen
+  aktuellen Code-Pfad (das Frontend liest Plattformen über `games.platform`,
+  nicht über die `platforms`-Tabelle direkt), Policy trotzdem nachgezogen
+  in `supabase/migrations/0003_platforms_policy_and_docs.sql`.
 - Storage-Bucket `saves` ist privat, mit Policies für SELECT/INSERT/DELETE
   **und UPDATE** (Update-Policy war ursprünglich vergessen — ohne sie
   schlägt jeder `upload(..., { upsert: true })` auf einen bereits
@@ -151,8 +157,9 @@ nicht nur aus dem Code geraten):**
   `add_save_detection_profiles`, nicht in diesem Repo enthalten, offenbar
   direkt in Supabase Studio erstellt) und eine `subscriptions`-Tabelle mit
   `tier`/`max_slots` (Default: `free`/`2`) — beide existieren in der DB,
-  werden aber vom aktuellen Frontend-Code **nicht** verwendet. Sieht nach
-  angefangenen, nicht abgeschlossenen Features aus.
+  werden aber vom aktuellen Frontend-Code **nicht** verwendet. Direkt in
+  der DB per `COMMENT ON TABLE` dokumentiert (siehe Migration `0003`),
+  damit das nicht wieder in Vergessenheit gerät.
 
 ## Entwicklung
 

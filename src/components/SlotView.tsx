@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { ChangeEvent } from "react";
 import { supabase } from "@/lib/supabase";
 import { detectSave } from "@/lib/saveDetector";
+import { useToast } from "@/components/ToastProvider";
 import {
   MAX_VERSIONS_PER_SLOT,
   fetchSaves,
@@ -19,7 +20,10 @@ type Props = {
 };
 
 export default function SlotView({ gameId, gameName }: Props) {
+  const { showToast } = useToast();
+
   const [saves, setSaves] = useState<Save[]>([]);
+  const [loadingSaves, setLoadingSaves] = useState(true);
   const [uploadingSlot, setUploadingSlot] = useState<number | null>(null);
   const [deletingSlot, setDeletingSlot] = useState<number | null>(null);
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
@@ -37,10 +41,12 @@ export default function SlotView({ gameId, gameName }: Props) {
     let ignore = false;
 
     async function run() {
+      setLoadingSaves(true);
       const { data: { user } } = await supabase.auth.getUser();
       const result = user ? await fetchSaves(gameId, user.id) : [];
       if (!ignore) {
         setSaves(result);
+        setLoadingSaves(false);
       }
     }
 
@@ -81,14 +87,14 @@ export default function SlotView({ gameId, gameName }: Props) {
     const detection = await detectSave(file);
 
     if (detection.gameId && detection.confidence >= 80 && detection.gameId !== gameId) {
-      alert(`Diese Datei sieht nach ${detection.gameName} aus.`);
+      showToast(`Diese Datei sieht nach ${detection.gameName} aus.`);
       return;
     }
 
     const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
-      alert("Login erforderlich");
+      showToast("Login erforderlich");
       return;
     }
 
@@ -108,7 +114,7 @@ export default function SlotView({ gameId, gameName }: Props) {
         .single();
 
       if (freshError) {
-        alert(freshError.message);
+        showToast(freshError.message);
         return;
       }
 
@@ -148,7 +154,13 @@ export default function SlotView({ gameId, gameName }: Props) {
       });
 
       if (!result.ok) {
-        alert(result.error);
+        showToast(result.error);
+        if (!freshExisting) {
+          // Möglicherweise wurde der Slot durch eine Race Condition
+          // gerade belegt (Unique-Constraint-Fehler) - Stand neu laden,
+          // damit die UI nicht veraltet bleibt.
+          await reloadSaves();
+        }
         return;
       }
 
@@ -157,6 +169,7 @@ export default function SlotView({ gameId, gameName }: Props) {
         setVersionsBySlot((prev) => ({ ...prev, [slot]: versions }));
       }
 
+      showToast(`"${file.name}" wurde in Slot ${slot} gespeichert.`, "success");
       await reloadSaves();
     } finally {
       setUploadingSlot(null);
@@ -187,7 +200,7 @@ export default function SlotView({ gameId, gameName }: Props) {
         .download(version.file_path);
 
       if (downloadError || !blob) {
-        alert(downloadError?.message ?? "Version konnte nicht geladen werden");
+        showToast(downloadError?.message ?? "Version konnte nicht geladen werden");
         return;
       }
 
@@ -196,7 +209,7 @@ export default function SlotView({ gameId, gameName }: Props) {
         .upload(save.file_path, blob, { upsert: true });
 
       if (uploadError) {
-        alert(uploadError.message);
+        showToast(uploadError.message);
         return;
       }
 
@@ -213,10 +226,11 @@ export default function SlotView({ gameId, gameName }: Props) {
         .eq("id", save.id);
 
       if (databaseError) {
-        alert(databaseError.message);
+        showToast(databaseError.message);
         return;
       }
 
+      showToast("Stand wiederhergestellt.", "success");
       await reloadSaves();
       const refreshedVersions = await fetchVersions(save.id);
       setVersionsBySlot((prev) => ({ ...prev, [save.slot]: refreshedVersions }));
@@ -241,7 +255,7 @@ export default function SlotView({ gameId, gameName }: Props) {
         .remove([save.file_path, ...versionPaths]);
 
       if (storageError) {
-        alert(storageError.message);
+        showToast(storageError.message);
         return;
       }
 
@@ -253,7 +267,7 @@ export default function SlotView({ gameId, gameName }: Props) {
         .eq("id", save.id);
 
       if (databaseError) {
-        alert(databaseError.message);
+        showToast(databaseError.message);
         return;
       }
 
@@ -263,6 +277,7 @@ export default function SlotView({ gameId, gameName }: Props) {
         return next;
       });
 
+      showToast(`Save in Slot ${save.slot} gelöscht.`, "success");
       await reloadSaves();
     } finally {
       setDeletingSlot(null);
@@ -273,110 +288,114 @@ export default function SlotView({ gameId, gameName }: Props) {
     <div className="mt-8 border rounded p-5">
       <h2 className="text-2xl font-bold">{gameName}</h2>
 
-      {[1, 2].map((slot) => {
-        const save = saves.find((item) => item.slot === slot);
-        const isUploading = uploadingSlot === slot;
-        const isDeleting = deletingSlot === slot;
-        const historyOpen = openHistorySlot === slot;
-        const versions = versionsBySlot[slot] ?? [];
-        const historyLoading = loadingHistorySlot === slot;
+      {loadingSaves ? (
+        <p className="text-sm text-gray-500 mt-3">Lädt Saves...</p>
+      ) : (
+        [1, 2].map((slot) => {
+          const save = saves.find((item) => item.slot === slot);
+          const isUploading = uploadingSlot === slot;
+          const isDeleting = deletingSlot === slot;
+          const historyOpen = openHistorySlot === slot;
+          const versions = versionsBySlot[slot] ?? [];
+          const historyLoading = loadingHistorySlot === slot;
 
-        return (
-          <div key={slot} className="border rounded p-4 mt-4">
-            <h3 className="font-bold">Slot {slot}</h3>
+          return (
+            <div key={slot} className="border rounded p-4 mt-4">
+              <h3 className="font-bold">Slot {slot}</h3>
 
-            {save ? (
-              <>
-                <p>{save.file_name}</p>
-                <p>🎮 {save.detected_platform ?? "unbekannt"}</p>
-                <p>💾 {save.detected_format ?? "-"}</p>
-                <p>🔍 {save.detection_confidence ?? 0}%</p>
+              {save ? (
+                <>
+                  <p>{save.file_name}</p>
+                  <p>🎮 {save.detected_platform ?? "unbekannt"}</p>
+                  <p>💾 {save.detected_format ?? "-"}</p>
+                  <p>🔍 {save.detection_confidence ?? 0}%</p>
 
-                <div className="flex gap-3 mt-2">
-                  <label className="cursor-pointer text-blue-600 underline">
-                    {isUploading ? "Lädt hoch..." : "Ersetzen"}
-                    <input
-                      hidden
-                      type="file"
+                  <div className="flex gap-3 mt-2">
+                    <label className="cursor-pointer text-blue-600 underline">
+                      {isUploading ? "Lädt hoch..." : "Ersetzen"}
+                      <input
+                        hidden
+                        type="file"
+                        disabled={isUploading || isDeleting}
+                        onChange={(event) => uploadSave(event, slot)}
+                      />
+                    </label>
+
+                    <button
+                      className="text-red-600 underline disabled:opacity-50"
                       disabled={isUploading || isDeleting}
-                      onChange={(event) => uploadSave(event, slot)}
-                    />
-                  </label>
+                      onClick={() => deleteSave(save)}
+                    >
+                      {isDeleting ? "Löscht..." : "Löschen"}
+                    </button>
 
-                  <button
-                    className="text-red-600 underline disabled:opacity-50"
-                    disabled={isUploading || isDeleting}
-                    onClick={() => deleteSave(save)}
-                  >
-                    {isDeleting ? "Löscht..." : "Löschen"}
-                  </button>
-
-                  <button
-                    className="text-gray-700 underline disabled:opacity-50"
-                    disabled={isUploading || isDeleting}
-                    onClick={() => toggleHistory(save)}
-                  >
-                    {historyOpen ? "Verlauf verbergen" : "Verlauf"}
-                  </button>
-                </div>
-
-                {historyOpen && (
-                  <div className="mt-3 border-t pt-3">
-                    {historyLoading && <p className="text-sm text-gray-500">Lädt Verlauf...</p>}
-
-                    {!historyLoading && versions.length === 0 && (
-                      <p className="text-sm text-gray-500">
-                        Noch keine älteren Stände für diesen Slot.
-                      </p>
-                    )}
-
-                    {!historyLoading && versions.length > 0 && (
-                      <ul className="space-y-2">
-                        {versions.map((version) => (
-                          <li
-                            key={version.id}
-                            className="flex items-center justify-between text-sm"
-                          >
-                            <span>
-                              {new Date(version.created_at).toLocaleString("de-DE")}
-                              {" — "}
-                              {version.file_name ?? "unbekannt"}
-                            </span>
-
-                            <button
-                              className="text-blue-600 underline disabled:opacity-50"
-                              disabled={restoringVersionId === version.id}
-                              onClick={() => restoreVersion(save, version)}
-                            >
-                              {restoringVersionId === version.id
-                                ? "Stellt wieder her..."
-                                : "Wiederherstellen"}
-                            </button>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-
-                    <p className="text-xs text-gray-400 mt-2">
-                      Es werden maximal {MAX_VERSIONS_PER_SLOT} ältere Stände pro Slot behalten.
-                    </p>
+                    <button
+                      className="text-gray-700 underline disabled:opacity-50"
+                      disabled={isUploading || isDeleting}
+                      onClick={() => toggleHistory(save)}
+                    >
+                      {historyOpen ? "Verlauf verbergen" : "Verlauf"}
+                    </button>
                   </div>
-                )}
-              </>
-            ) : (
-              <label className="cursor-pointer">
-                {isUploading ? "Lädt hoch..." : "Save hochladen"}
-                <input
-                  hidden
-                  type="file"
-                  disabled={isUploading}
-                  onChange={(event) => uploadSave(event, slot)}
-                />
-              </label>
-            )}
-          </div>
-        );
-      })}
+
+                  {historyOpen && (
+                    <div className="mt-3 border-t pt-3">
+                      {historyLoading && <p className="text-sm text-gray-500">Lädt Verlauf...</p>}
+
+                      {!historyLoading && versions.length === 0 && (
+                        <p className="text-sm text-gray-500">
+                          Noch keine älteren Stände für diesen Slot.
+                        </p>
+                      )}
+
+                      {!historyLoading && versions.length > 0 && (
+                        <ul className="space-y-2">
+                          {versions.map((version) => (
+                            <li
+                              key={version.id}
+                              className="flex items-center justify-between text-sm"
+                            >
+                              <span>
+                                {new Date(version.created_at).toLocaleString("de-DE")}
+                                {" — "}
+                                {version.file_name ?? "unbekannt"}
+                              </span>
+
+                              <button
+                                className="text-blue-600 underline disabled:opacity-50"
+                                disabled={restoringVersionId === version.id}
+                                onClick={() => restoreVersion(save, version)}
+                              >
+                                {restoringVersionId === version.id
+                                  ? "Stellt wieder her..."
+                                  : "Wiederherstellen"}
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+
+                      <p className="text-xs text-gray-400 mt-2">
+                        Es werden maximal {MAX_VERSIONS_PER_SLOT} ältere Stände pro Slot behalten.
+                      </p>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <label className="cursor-pointer">
+                  {isUploading ? "Lädt hoch..." : "Save hochladen"}
+                  <input
+                    hidden
+                    type="file"
+                    disabled={isUploading}
+                    onChange={(event) => uploadSave(event, slot)}
+                  />
+                </label>
+              )}
+            </div>
+          );
+        })
+      )}
     </div>
   );
 }

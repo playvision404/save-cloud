@@ -3,11 +3,13 @@
 import { useEffect, useState } from "react";
 import type { User } from "@supabase/supabase-js";
 import { supabase } from "@/lib/supabase";
+import { useToast } from "@/components/ToastProvider";
 
 import AuthStatus from "@/components/AuthStatus";
 import SaveManager from "@/components/SaveManager";
 
 export default function Home() {
+  const { showToast } = useToast();
 
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -46,11 +48,9 @@ export default function Home() {
 
 
     if (error) {
-      alert(error.message);
+      showToast(error.message);
     } else {
-      alert(
-        "Registrierung erfolgreich!"
-      );
+      showToast("Registrierung erfolgreich!", "success");
     }
 
   }
@@ -68,11 +68,9 @@ export default function Home() {
 
 
     if (error) {
-      alert(error.message);
+      showToast(error.message);
     } else {
-      alert(
-        "Login erfolgreich!"
-      );
+      showToast("Login erfolgreich!", "success");
     }
 
   }

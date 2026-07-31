@@ -5,6 +5,7 @@ import type { DragEvent } from "react";
 import { supabase } from "@/lib/supabase";
 import { detectSave } from "@/lib/saveDetector";
 import type { DetectedSave } from "@/lib/saveDetector";
+import { useToast } from "@/components/ToastProvider";
 import { fetchSaveForSlot, performUpload } from "@/lib/saveUpload";
 import type { Save } from "@/lib/saveUpload";
 
@@ -27,12 +28,15 @@ type Props = {
 const AUTO_SELECT_CONFIDENCE = 40;
 
 export default function QuickUpload({ onUploaded }: Props) {
+  const { showToast } = useToast();
+
   const [file, setFile] = useState<File | null>(null);
   const [detecting, setDetecting] = useState(false);
   const [detection, setDetection] = useState<DetectedSave | null>(null);
   const [dragOver, setDragOver] = useState(false);
 
   const [allGames, setAllGames] = useState<GameOption[]>([]);
+  const [loadingGames, setLoadingGames] = useState(true);
   const [searchTerm, setSearchTerm] = useState("");
   const [showSearch, setShowSearch] = useState(false);
   const [selectedGame, setSelectedGame] = useState<GameOption | null>(null);
@@ -58,6 +62,7 @@ export default function QuickUpload({ onUploaded }: Props) {
         }
         if (!ignore) {
           setAllGames(data ?? []);
+          setLoadingGames(false);
         }
       });
 
@@ -140,7 +145,7 @@ export default function QuickUpload({ onUploaded }: Props) {
 
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) {
-      alert("Login erforderlich");
+      showToast("Login erforderlich");
       return;
     }
 
@@ -168,13 +173,23 @@ export default function QuickUpload({ onUploaded }: Props) {
       });
 
       if (!result.ok) {
-        alert(result.error);
+        showToast(result.error);
+        if (!existing) {
+          // Möglicherweise wurde der Slot durch eine Race Condition
+          // gerade belegt (Unique-Constraint-Fehler) - Status neu laden.
+          const [slot1, slot2] = await Promise.all([
+            fetchSaveForSlot(selectedGame.id, user.id, 1),
+            fetchSaveForSlot(selectedGame.id, user.id, 2),
+          ]);
+          setSlotSaves({ 1: slot1, 2: slot2 });
+        }
         return;
       }
 
       setSuccessMessage(
         `"${file.name}" wurde als Slot ${slot} für ${selectedGame.name} gespeichert.`
       );
+      showToast(`"${file.name}" wurde in Slot ${slot} gespeichert.`, "success");
       onUploaded?.(selectedGame);
 
       // Formular für den nächsten Upload zurücksetzen
@@ -210,6 +225,10 @@ export default function QuickUpload({ onUploaded }: Props) {
         Datei auswählen oder hierher ziehen — Spiel und Konsole werden
         automatisch erkannt.
       </p>
+
+      {loadingGames && (
+        <p className="text-sm text-gray-500 mb-3">Lädt Spielkatalog...</p>
+      )}
 
       <div
         onDragOver={(event) => {
