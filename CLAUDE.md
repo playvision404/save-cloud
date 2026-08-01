@@ -8,26 +8,23 @@ Datenbank-Schema (aus dem Code rekonstruiert) und offene Punkte stehen in
 `README.md` — dort zuerst nachlesen, bevor Annahmen über Tabellen/Spalten
 getroffen werden.
 
-## ⚠️ Es arbeitet vermutlich noch jemand/etwas anderes parallel an diesem Projekt
+## ⚠️ Code/DB-Stand kann zwischen Arbeitsschritten "vorspringen"
 
-Mehrfach beobachtet: Code-Dateien und DB-Spalten sind zwischen zwei
-Arbeitsschritten in derselben Konversation verändert bzw. neu aufgetaucht,
-ohne dass diese Session sie angelegt hat (z. B. `saves.file_hash`,
-`saves.updated_by_device`, `saves.deleted_at`,
-`save_versions.device_label` — allesamt bereits in der DB vorhanden, bevor
-der zugehörige Code hier geschrieben wurde; außerdem einmal unbenutzte
-Dateien `Toast.tsx`/`useToast.ts`, die ein anderer Versuch derselben
-Toast-Idee gewesen sein dürften). Das deutet auf eine parallele Session
-(vermutlich Claude Code direkt gegen Supabase/GitHub) hin, die an
-ähnlichen oder denselben Features arbeitet.
+Mehrfach beobachtet: Code-Dateien und DB-Spalten waren zwischen zwei
+Arbeitsschritten in derselben Konversation bereits verändert bzw. neu
+vorhanden, ohne dass der jeweilige Schritt sie sichtbar angelegt hatte
+(z. B. `saves.file_hash`, `saves.updated_by_device`, `saves.deleted_at`,
+`save_versions.device_label`). **Ursache war keine parallele Session**,
+sondern ein Nutzungslimit, das mitten in der Bearbeitung erreicht wurde —
+die Session ist dann später fortgesetzt worden und hatte auf einen bereits
+weiter fortgeschrittenen Stand zugegriffen, als der sichtbare
+Gesprächsverlauf vermuten ließ.
 
-**Praktische Konsequenz**: Vor dem Bauen eines Features immer zuerst
-prüfen, ob es nicht schon (teilweise) existiert — Code-Dateibaum UND
-echten DB-Stand (`information_schema.columns` per Supabase-Connector), da
-diese auseinanderlaufen können. Bei Namenskonflikten (z. B.
-`updated_by_device` vs. `device_label` für dasselbe Konzept in zwei
-Tabellen) die bereits vorhandenen Namen übernehmen statt eigene neue
-einzuführen.
+**Praktische Konsequenz bleibt dieselbe**: Vor dem Bauen eines Features
+lieber einmal zu oft prüfen, ob es nicht schon (teilweise) existiert —
+Code-Dateibaum UND echten DB-Stand (`information_schema.columns` per
+Supabase-Connector) frisch einlesen statt sich auf den Gesprächsverlauf
+oder ältere `view`-Ergebnisse zu verlassen.
 
 ## Wichtige Hinweise, bevor du Code änderst
 
