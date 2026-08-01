@@ -186,6 +186,11 @@ export default function QuickUpload({ onUploaded }: Props) {
         return;
       }
 
+      if (result.duplicate) {
+        showToast("Datei ist identisch mit dem aktuellen Stand — nichts geändert.", "success");
+        return;
+      }
+
       setSuccessMessage(
         `"${file.name}" wurde als Slot ${slot} für ${selectedGame.name} gespeichert.`
       );

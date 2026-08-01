@@ -7,10 +7,17 @@ import { detectSave } from "@/lib/saveDetector";
 import { useToast } from "@/components/ToastProvider";
 import {
   MAX_VERSIONS_PER_SLOT,
+  TRASH_RETENTION_DAYS,
+  downloadFile,
   fetchSaves,
+  fetchTrash,
   fetchVersions,
   performUpload,
+  permanentlyDeleteSave,
+  restoreFromTrash,
   snapshotToHistory,
+  softDeleteSave,
+  updateNote,
 } from "@/lib/saveUpload";
 import type { Save, SaveVersion } from "@/lib/saveUpload";
 
@@ -26,10 +33,20 @@ export default function SlotView({ gameId, gameName }: Props) {
   const [loadingSaves, setLoadingSaves] = useState(true);
   const [uploadingSlot, setUploadingSlot] = useState<number | null>(null);
   const [deletingSlot, setDeletingSlot] = useState<number | null>(null);
+  const [downloadingId, setDownloadingId] = useState<string | null>(null);
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [openHistorySlot, setOpenHistorySlot] = useState<number | null>(null);
   const [versionsBySlot, setVersionsBySlot] = useState<Record<number, SaveVersion[]>>({});
   const [loadingHistorySlot, setLoadingHistorySlot] = useState<number | null>(null);
+
+  const [editingNoteSlot, setEditingNoteSlot] = useState<number | null>(null);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+
+  const [trashOpen, setTrashOpen] = useState(false);
+  const [trash, setTrash] = useState<Save[]>([]);
+  const [loadingTrash, setLoadingTrash] = useState(false);
+  const [trashActionId, setTrashActionId] = useState<string | null>(null);
 
   async function loadSaves(currentGameId: string) {
     const { data: { user } } = await supabase.auth.getUser();
@@ -62,6 +79,28 @@ export default function SlotView({ gameId, gameName }: Props) {
     setSaves(result);
   }
 
+  async function loadTrash() {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return [];
+    return fetchTrash(gameId, user.id);
+  }
+
+  async function toggleTrash() {
+    if (trashOpen) {
+      setTrashOpen(false);
+      return;
+    }
+
+    setTrashOpen(true);
+    setLoadingTrash(true);
+    try {
+      const result = await loadTrash();
+      setTrash(result);
+    } finally {
+      setLoadingTrash(false);
+    }
+  }
+
   async function toggleHistory(save: Save) {
     if (openHistorySlot === save.slot) {
       setOpenHistorySlot(null);
@@ -76,6 +115,45 @@ export default function SlotView({ gameId, gameName }: Props) {
       setVersionsBySlot((prev) => ({ ...prev, [save.slot]: versions }));
     } finally {
       setLoadingHistorySlot(null);
+    }
+  }
+
+  async function handleDownload(path: string, fileName: string, hash?: string | null) {
+    setDownloadingId(path);
+    try {
+      const result = await downloadFile(path, fileName, hash);
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      if (result.hashMismatch) {
+        showToast(
+          "Achtung: Die heruntergeladene Datei stimmt nicht mit der gespeicherten " +
+          "Prüfsumme überein. Bitte erneut herunterladen.",
+        );
+      }
+    } finally {
+      setDownloadingId(null);
+    }
+  }
+
+  function startEditingNote(save: Save) {
+    setEditingNoteSlot(save.slot);
+    setNoteDraft(save.note ?? "");
+  }
+
+  async function saveNote(save: Save) {
+    setSavingNote(true);
+    try {
+      const result = await updateNote(save.id, noteDraft);
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      setEditingNoteSlot(null);
+      await reloadSaves();
+    } finally {
+      setSavingNote(false);
     }
   }
 
@@ -126,8 +204,9 @@ export default function SlotView({ gameId, gameName }: Props) {
         freshExisting.updated_at !== localExisting.updated_at
       ) {
         const zeitpunkt = new Date(freshExisting.updated_at).toLocaleString("de-DE");
+        const geraet = freshExisting.updated_by_device ?? "einem anderen Gerät";
         const weiter = confirm(
-          `Achtung: Dieser Slot wurde am ${zeitpunkt} von einem anderen Gerät ` +
+          `Achtung: Dieser Slot wurde am ${zeitpunkt} von ${geraet} ` +
           `aktualisiert (${freshExisting.file_name ?? "unbekannte Datei"}).\n\n` +
           `Trotzdem mit deiner Datei überschreiben? Der andere Stand wird ` +
           `automatisch im Verlauf gesichert.`
@@ -161,6 +240,11 @@ export default function SlotView({ gameId, gameName }: Props) {
           // damit die UI nicht veraltet bleibt.
           await reloadSaves();
         }
+        return;
+      }
+
+      if (result.duplicate) {
+        showToast("Datei ist identisch mit dem aktuellen Stand — nichts geändert.", "success");
         return;
       }
 
@@ -222,6 +306,8 @@ export default function SlotView({ gameId, gameName }: Props) {
           detected_format: version.detected_format,
           detection_confidence: version.detection_confidence,
           detection_reasons: version.detection_reasons,
+          file_hash: version.file_hash,
+          updated_by_device: version.device_label,
         })
         .eq("id", save.id);
 
@@ -239,54 +325,119 @@ export default function SlotView({ gameId, gameName }: Props) {
     }
   }
 
-  async function deleteSave(save: Save) {
-    if (!confirm(`Save in Slot ${save.slot} wirklich löschen? Der gesamte Verlauf wird mitgelöscht.`)) {
+  async function moveToTrash(save: Save) {
+    if (
+      !confirm(
+        `Save in Slot ${save.slot} in den Papierkorb verschieben? ` +
+        `Wird dort noch ${TRASH_RETENTION_DAYS} Tage aufbewahrt und kann ` +
+        `in dieser Zeit wiederhergestellt werden.`
+      )
+    ) {
       return;
     }
 
     setDeletingSlot(save.slot);
 
     try {
-      const versions = await fetchVersions(save.id);
-      const versionPaths = versions.map((version) => version.file_path);
-
-      const { error: storageError } = await supabase.storage
-        .from("saves")
-        .remove([save.file_path, ...versionPaths]);
-
-      if (storageError) {
-        showToast(storageError.message);
+      const result = await softDeleteSave(save);
+      if (!result.ok) {
+        showToast(result.error);
         return;
       }
 
-      // save_versions-Zeilen werden per "on delete cascade" automatisch
-      // mitgelöscht, sobald die saves-Zeile gelöscht wird.
-      const { error: databaseError } = await supabase
-        .from("saves")
-        .delete()
-        .eq("id", save.id);
-
-      if (databaseError) {
-        showToast(databaseError.message);
-        return;
-      }
-
-      setVersionsBySlot((prev) => {
-        const next = { ...prev };
-        delete next[save.slot];
-        return next;
-      });
-
-      showToast(`Save in Slot ${save.slot} gelöscht.`, "success");
+      showToast(`Save in Slot ${save.slot} in den Papierkorb verschoben.`, "success");
       await reloadSaves();
     } finally {
       setDeletingSlot(null);
     }
   }
 
+  async function handleRestoreFromTrash(save: Save) {
+    setTrashActionId(save.id);
+    try {
+      const result = await restoreFromTrash(save);
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      showToast("Save wiederhergestellt.", "success");
+      setTrash((prev) => prev.filter((item) => item.id !== save.id));
+      await reloadSaves();
+    } finally {
+      setTrashActionId(null);
+    }
+  }
+
+  async function handlePermanentDelete(save: Save) {
+    if (!confirm("Endgültig löschen? Das kann nicht rückgängig gemacht werden.")) {
+      return;
+    }
+
+    setTrashActionId(save.id);
+    try {
+      const result = await permanentlyDeleteSave(save);
+      if (!result.ok) {
+        showToast(result.error);
+        return;
+      }
+      showToast("Endgültig gelöscht.", "success");
+      setTrash((prev) => prev.filter((item) => item.id !== save.id));
+    } finally {
+      setTrashActionId(null);
+    }
+  }
+
   return (
     <div className="mt-8 border rounded p-5">
-      <h2 className="text-2xl font-bold">{gameName}</h2>
+      <div className="flex items-center justify-between">
+        <h2 className="text-2xl font-bold">{gameName}</h2>
+        <button className="text-sm text-gray-500 underline" onClick={toggleTrash}>
+          {trashOpen ? "Papierkorb verbergen" : "Papierkorb"}
+        </button>
+      </div>
+
+      {trashOpen && (
+        <div className="mt-3 border rounded p-4 bg-gray-50">
+          <p className="font-bold mb-2">Papierkorb</p>
+          <p className="text-xs text-gray-500 mb-3">
+            Einträge werden {TRASH_RETENTION_DAYS} Tage aufbewahrt und danach beim
+            nächsten Öffnen der App automatisch endgültig gelöscht.
+          </p>
+
+          {loadingTrash && <p className="text-sm text-gray-500">Lädt Papierkorb...</p>}
+
+          {!loadingTrash && trash.length === 0 && (
+            <p className="text-sm text-gray-500">Papierkorb ist leer.</p>
+          )}
+
+          {!loadingTrash &&
+            trash.map((save) => (
+              <div key={save.id} className="flex items-center justify-between text-sm py-1">
+                <span>
+                  Slot {save.slot} — {save.file_name ?? "unbekannt"}
+                  {save.deleted_at &&
+                    ` (gelöscht am ${new Date(save.deleted_at).toLocaleDateString("de-DE")})`}
+                </span>
+                <span className="flex gap-3">
+                  <button
+                    className="text-blue-600 underline disabled:opacity-50"
+                    disabled={trashActionId === save.id}
+                    onClick={() => handleRestoreFromTrash(save)}
+                  >
+                    Wiederherstellen
+                  </button>
+                  <button
+                    className="text-red-600 underline disabled:opacity-50"
+                    disabled={trashActionId === save.id}
+                    onClick={() => handlePermanentDelete(save)}
+                  >
+                    Endgültig löschen
+                  </button>
+                </span>
+              </div>
+            ))}
+        </div>
+      )}
 
       {loadingSaves ? (
         <p className="text-sm text-gray-500 mt-3">Lädt Saves...</p>
@@ -298,6 +449,7 @@ export default function SlotView({ gameId, gameName }: Props) {
           const historyOpen = openHistorySlot === slot;
           const versions = versionsBySlot[slot] ?? [];
           const historyLoading = loadingHistorySlot === slot;
+          const isEditingNote = editingNoteSlot === slot;
 
           return (
             <div key={slot} className="border rounded p-4 mt-4">
@@ -309,8 +461,59 @@ export default function SlotView({ gameId, gameName }: Props) {
                   <p>🎮 {save.detected_platform ?? "unbekannt"}</p>
                   <p>💾 {save.detected_format ?? "-"}</p>
                   <p>🔍 {save.detection_confidence ?? 0}%</p>
+                  {save.updated_by_device && (
+                    <p className="text-xs text-gray-500">
+                      Zuletzt von: {save.updated_by_device}
+                    </p>
+                  )}
 
-                  <div className="flex gap-3 mt-2">
+                  {isEditingNote ? (
+                    <div className="mt-2">
+                      <input
+                        className="border rounded p-1 w-full text-sm"
+                        value={noteDraft}
+                        onChange={(event) => setNoteDraft(event.target.value)}
+                        placeholder="Notiz, z. B. 'vor Endboss'"
+                      />
+                      <div className="flex gap-3 mt-1">
+                        <button
+                          className="text-blue-600 underline text-sm disabled:opacity-50"
+                          disabled={savingNote}
+                          onClick={() => saveNote(save)}
+                        >
+                          Speichern
+                        </button>
+                        <button
+                          className="text-gray-500 underline text-sm"
+                          onClick={() => setEditingNoteSlot(null)}
+                        >
+                          Abbrechen
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <p className="text-sm mt-1">
+                      📝 {save.note || <span className="text-gray-400">keine Notiz</span>}{" "}
+                      <button
+                        className="text-blue-600 underline text-xs"
+                        onClick={() => startEditingNote(save)}
+                      >
+                        bearbeiten
+                      </button>
+                    </p>
+                  )}
+
+                  <div className="flex gap-3 mt-2 flex-wrap">
+                    <button
+                      className="text-green-700 underline disabled:opacity-50"
+                      disabled={downloadingId === save.file_path}
+                      onClick={() =>
+                        handleDownload(save.file_path, save.file_name ?? "save.sav", save.file_hash)
+                      }
+                    >
+                      {downloadingId === save.file_path ? "Lädt..." : "Download"}
+                    </button>
+
                     <label className="cursor-pointer text-blue-600 underline">
                       {isUploading ? "Lädt hoch..." : "Ersetzen"}
                       <input
@@ -324,9 +527,9 @@ export default function SlotView({ gameId, gameName }: Props) {
                     <button
                       className="text-red-600 underline disabled:opacity-50"
                       disabled={isUploading || isDeleting}
-                      onClick={() => deleteSave(save)}
+                      onClick={() => moveToTrash(save)}
                     >
-                      {isDeleting ? "Löscht..." : "Löschen"}
+                      {isDeleting ? "Verschiebt..." : "In Papierkorb"}
                     </button>
 
                     <button
@@ -353,23 +556,39 @@ export default function SlotView({ gameId, gameName }: Props) {
                           {versions.map((version) => (
                             <li
                               key={version.id}
-                              className="flex items-center justify-between text-sm"
+                              className="flex items-center justify-between text-sm gap-2"
                             >
                               <span>
                                 {new Date(version.created_at).toLocaleString("de-DE")}
                                 {" — "}
                                 {version.file_name ?? "unbekannt"}
+                                {version.device_label && ` (${version.device_label})`}
                               </span>
 
-                              <button
-                                className="text-blue-600 underline disabled:opacity-50"
-                                disabled={restoringVersionId === version.id}
-                                onClick={() => restoreVersion(save, version)}
-                              >
-                                {restoringVersionId === version.id
-                                  ? "Stellt wieder her..."
-                                  : "Wiederherstellen"}
-                              </button>
+                              <span className="flex gap-3 shrink-0">
+                                <button
+                                  className="text-green-700 underline disabled:opacity-50"
+                                  disabled={downloadingId === version.file_path}
+                                  onClick={() =>
+                                    handleDownload(
+                                      version.file_path,
+                                      version.file_name ?? "save.sav",
+                                      version.file_hash
+                                    )
+                                  }
+                                >
+                                  Download
+                                </button>
+                                <button
+                                  className="text-blue-600 underline disabled:opacity-50"
+                                  disabled={restoringVersionId === version.id}
+                                  onClick={() => restoreVersion(save, version)}
+                                >
+                                  {restoringVersionId === version.id
+                                    ? "Stellt wieder her..."
+                                    : "Wiederherstellen"}
+                                </button>
+                              </span>
                             </li>
                           ))}
                         </ul>

@@ -1,4 +1,5 @@
 import { supabase } from "./supabase";
+import { getDeviceName } from "./device";
 import type { DetectedSave } from "./saveDetector";
 
 export type Save = {
@@ -7,11 +8,15 @@ export type Save = {
   file_path: string;
   file_size: number;
   file_name?: string;
+  note?: string | null;
   detected_platform?: string;
   detected_format?: string;
   detection_confidence?: number;
   detection_reasons?: string[];
   updated_at?: string;
+  file_hash?: string | null;
+  updated_by_device?: string | null;
+  deleted_at?: string | null;
 };
 
 export type SaveVersion = {
@@ -26,11 +31,20 @@ export type SaveVersion = {
   detection_confidence?: number;
   detection_reasons?: string[];
   created_at: string;
+  file_hash?: string | null;
+  device_label?: string | null;
 };
 
 // Wie viele alte Stände pro Slot behalten werden, bevor der älteste
 // automatisch gelöscht wird (Speicherplatz ist begrenzt).
 export const MAX_VERSIONS_PER_SLOT = 5;
+
+// Wie lange ein gelöschter Save im Papierkorb bleibt, bevor er beim
+// nächsten Öffnen der App automatisch endgültig gelöscht wird. Es gibt
+// (bewusst, um keine zusätzliche Server-Infrastruktur zu brauchen) keinen
+// serverseitigen Cronjob dafür - die Bereinigung passiert client-seitig
+// beim Laden der Save-Übersicht, siehe purgeExpiredTrash().
+export const TRASH_RETENTION_DAYS = 7;
 
 export async function fetchSaves(gameId: string, userId: string): Promise<Save[]> {
   const { data, error } = await supabase
@@ -38,7 +52,25 @@ export async function fetchSaves(gameId: string, userId: string): Promise<Save[]
     .select("*")
     .eq("game_id", gameId)
     .eq("user_id", userId)
+    .is("deleted_at", null)
     .order("slot");
+
+  if (error) {
+    console.error(error);
+    return [];
+  }
+
+  return data ?? [];
+}
+
+export async function fetchTrash(gameId: string, userId: string): Promise<Save[]> {
+  const { data, error } = await supabase
+    .from("saves")
+    .select("*")
+    .eq("game_id", gameId)
+    .eq("user_id", userId)
+    .not("deleted_at", "is", null)
+    .order("deleted_at", { ascending: false });
 
   if (error) {
     console.error(error);
@@ -59,6 +91,7 @@ export async function fetchSaveForSlot(
     .eq("game_id", gameId)
     .eq("user_id", userId)
     .eq("slot", slot)
+    .is("deleted_at", null)
     .maybeSingle();
 
   if (error) {
@@ -82,6 +115,139 @@ export async function fetchVersions(saveId: string): Promise<SaveVersion[]> {
   }
 
   return data ?? [];
+}
+
+export async function computeFileHash(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer();
+  const digest = await crypto.subtle.digest("SHA-256", buffer);
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+// Lädt eine Datei aus dem Storage herunter und stößt den Browser-Download
+// an. Prüft dabei (falls vorhanden) die gespeicherte Prüfsumme gegen den
+// tatsächlich heruntergeladenen Inhalt, um eine unbemerkt kaputte
+// Übertragung zu erkennen.
+export async function downloadFile(
+  path: string,
+  fileName: string,
+  expectedHash?: string | null
+): Promise<{ ok: true; hashMismatch: boolean } | { ok: false; error: string }> {
+  const { data: blob, error } = await supabase.storage.from("saves").download(path);
+
+  if (error || !blob) {
+    return { ok: false, error: error?.message ?? "Download fehlgeschlagen" };
+  }
+
+  let hashMismatch = false;
+  if (expectedHash) {
+    const buffer = await blob.arrayBuffer();
+    const digest = await crypto.subtle.digest("SHA-256", buffer);
+    const actualHash = Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+    hashMismatch = actualHash !== expectedHash;
+  }
+
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+
+  return { ok: true, hashMismatch };
+}
+
+export async function updateNote(
+  saveId: string,
+  note: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase.from("saves").update({ note }).eq("id", saveId);
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+// Verschiebt einen Save in den Papierkorb (nur DB-Flag, Storage bleibt
+// unangetastet), statt ihn sofort endgültig zu löschen.
+export async function softDeleteSave(
+  save: Save
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase
+    .from("saves")
+    .update({ deleted_at: new Date().toISOString() })
+    .eq("id", save.id);
+
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+export async function restoreFromTrash(
+  save: Save
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const { error } = await supabase
+    .from("saves")
+    .update({ deleted_at: null })
+    .eq("id", save.id);
+
+  if (error) {
+    return { ok: false, error: error.message };
+  }
+  return { ok: true };
+}
+
+// Löscht einen Save unwiderruflich: Storage-Datei, kompletter Verlauf
+// (Storage + DB) und die saves-Zeile selbst.
+export async function permanentlyDeleteSave(
+  save: Save
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  const versions = await fetchVersions(save.id);
+  const versionPaths = versions.map((version) => version.file_path);
+
+  const { error: storageError } = await supabase.storage
+    .from("saves")
+    .remove([save.file_path, ...versionPaths]);
+
+  if (storageError) {
+    return { ok: false, error: storageError.message };
+  }
+
+  const { error: databaseError } = await supabase.from("saves").delete().eq("id", save.id);
+
+  if (databaseError) {
+    return { ok: false, error: databaseError.message };
+  }
+
+  return { ok: true };
+}
+
+// Räumt beim Laden der Übersicht beiläufig Papierkorb-Einträge auf, die
+// älter als TRASH_RETENTION_DAYS sind. Es gibt keinen Server-Cronjob dafür
+// (kein zusätzlicher Infrastruktur-Aufwand) - die Bereinigung passiert
+// also nur, wenn die App tatsächlich geöffnet wird.
+export async function purgeExpiredTrash(userId: string) {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - TRASH_RETENTION_DAYS);
+
+  const { data, error } = await supabase
+    .from("saves")
+    .select("*")
+    .eq("user_id", userId)
+    .not("deleted_at", "is", null)
+    .lt("deleted_at", cutoff.toISOString());
+
+  if (error || !data || data.length === 0) return;
+
+  for (const save of data) {
+    await permanentlyDeleteSave(save);
+  }
 }
 
 // Sichert den aktuell aktiven Storage-Stand eines Slots als Verlaufs-
@@ -115,6 +281,8 @@ export async function snapshotToHistory(
     detected_format: existing.detected_format,
     detection_confidence: existing.detection_confidence,
     detection_reasons: existing.detection_reasons,
+    file_hash: existing.file_hash,
+    device_label: existing.updated_by_device,
   });
 
   if (insertError) {
@@ -145,11 +313,12 @@ type UploadParams = {
   freshExisting: Save | null;
 };
 
-// Führt den eigentlichen Upload aus: sichert einen evtl. vorhandenen Stand
-// im Verlauf, lädt die neue Datei in den Storage und schreibt/aktualisiert
-// die saves-Zeile. Enthält absichtlich KEINE Konflikt-Abfrage/Dialoge -
-// die liegt bei den aufrufenden Komponenten, da die passende UX je nach
-// Einstiegspunkt (SlotView vs. Schnell-Upload) unterschiedlich ist.
+// Führt den eigentlichen Upload aus: erkennt unveränderte Duplikate,
+// sichert einen evtl. vorhandenen Stand im Verlauf, lädt die neue Datei in
+// den Storage und schreibt/aktualisiert die saves-Zeile. Enthält
+// absichtlich KEINE Konflikt-Abfrage/Dialoge - die liegt bei den
+// aufrufenden Komponenten, da die passende UX je nach Einstiegspunkt
+// (SlotView vs. Schnell-Upload) unterschiedlich ist.
 export async function performUpload({
   file,
   userId,
@@ -158,8 +327,23 @@ export async function performUpload({
   slot,
   detection,
   freshExisting,
-}: UploadParams): Promise<{ ok: true } | { ok: false; error: string }> {
+}: UploadParams): Promise<
+  { ok: true; duplicate: boolean } | { ok: false; error: string }
+> {
   const filePath = `${userId}/${gameId}/slot-${slot}`;
+  const hash = await computeFileHash(file);
+
+  // Duplikat-Erkennung: identische Datei (gleiche Größe + gleicher Hash)
+  // wie der aktuell aktive Stand - nichts tun, keinen neuen Verlaufs-
+  // eintrag anlegen, keinen unnötigen Storage-Traffic erzeugen.
+  if (
+    freshExisting &&
+    freshExisting.file_hash &&
+    freshExisting.file_hash === hash &&
+    freshExisting.file_size === file.size
+  ) {
+    return { ok: true, duplicate: true };
+  }
 
   if (freshExisting) {
     try {
@@ -184,11 +368,16 @@ export async function performUpload({
     file_path: filePath,
     file_size: file.size,
     file_name: file.name,
-    note: gameName,
+    // Notiz nur beim allerersten Anlegen automatisch setzen - bei einem
+    // Update lassen wir eine vom Nutzer selbst vergebene Notiz unangetastet.
+    ...(freshExisting ? {} : { note: gameName }),
     detected_platform: detection.platform,
     detected_format: detection.format,
     detection_confidence: detection.confidence,
     detection_reasons: detection.reasons,
+    file_hash: hash,
+    updated_by_device: getDeviceName(),
+    deleted_at: null,
   };
 
   const { error: databaseError } = freshExisting
@@ -207,5 +396,5 @@ export async function performUpload({
     return { ok: false, error: databaseError.message };
   }
 
-  return { ok: true };
+  return { ok: true, duplicate: false };
 }

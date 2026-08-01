@@ -15,6 +15,10 @@ export default function Home() {
   const [password, setPassword] = useState("");
   const [user, setUser] = useState<User | null>(null);
 
+  const [recoveryMode, setRecoveryMode] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [settingPassword, setSettingPassword] = useState(false);
+
   useEffect(() => {
     let ignore = false;
 
@@ -26,8 +30,11 @@ export default function Home() {
 
     const {
       data: { subscription },
-    } = supabase.auth.onAuthStateChange((_event, session) => {
+    } = supabase.auth.onAuthStateChange((event, session) => {
       setUser(session?.user ?? null);
+      if (event === "PASSWORD_RECOVERY") {
+        setRecoveryMode(true);
+      }
     });
 
     return () => {
@@ -75,7 +82,76 @@ export default function Home() {
 
   }
 
+  async function requestPasswordReset() {
+    if (!email) {
+      showToast("Bitte zuerst E-Mail-Adresse eingeben.");
+      return;
+    }
 
+    const { error } = await supabase.auth.resetPasswordForEmail(email, {
+      redirectTo: typeof window !== "undefined" ? window.location.origin : undefined,
+    });
+
+    if (error) {
+      showToast(error.message);
+    } else {
+      showToast(
+        "Falls diese E-Mail-Adresse registriert ist, wurde ein Link zum Zurücksetzen verschickt.",
+        "success"
+      );
+    }
+  }
+
+  async function submitNewPassword() {
+    if (newPassword.length < 6) {
+      showToast("Passwort muss mindestens 6 Zeichen lang sein.");
+      return;
+    }
+
+    setSettingPassword(true);
+    try {
+      const { error } = await supabase.auth.updateUser({ password: newPassword });
+
+      if (error) {
+        showToast(error.message);
+        return;
+      }
+
+      showToast("Neues Passwort gesetzt.", "success");
+      setRecoveryMode(false);
+      setNewPassword("");
+    } finally {
+      setSettingPassword(false);
+    }
+  }
+
+
+
+  if (recoveryMode) {
+    return (
+      <main className="min-h-screen p-10">
+        <h1 className="text-4xl font-bold mb-6">Neues Passwort setzen</h1>
+
+        <div className="max-w-md">
+          <input
+            className="border rounded p-2 w-full mb-3"
+            placeholder="Neues Passwort"
+            type="password"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+          />
+
+          <button
+            className="bg-blue-600 text-white rounded p-2 disabled:opacity-50"
+            disabled={settingPassword}
+            onClick={submitNewPassword}
+          >
+            {settingPassword ? "Speichert..." : "Passwort speichern"}
+          </button>
+        </div>
+      </main>
+    );
+  }
 
   return (
 
@@ -128,6 +204,15 @@ export default function Home() {
         >
           Anmelden
         </button>
+
+        <div className="mt-2">
+          <button
+            className="text-sm text-gray-500 underline"
+            onClick={requestPasswordReset}
+          >
+            Passwort vergessen?
+          </button>
+        </div>
 
 
 

@@ -62,6 +62,46 @@ kann sie von überall wieder herunterladen.
   ("wirklich löschen?", "wirklich überschreiben?") bleiben bewusst als
   natives `confirm()` — das sind Ja/Nein-Entscheidungen, keine reinen
   Meldungen.
+- **Download**: Jeder Slot und jeder Verlaufs-Eintrag hat einen
+  Download-Button (`downloadFile()` in `saveUpload.ts`). Prüft dabei die
+  gespeicherte SHA-256-Prüfsumme gegen den heruntergeladenen Inhalt und
+  warnt bei Abweichung (kaputte Übertragung).
+- **Editierbare Notizen** pro Save (`saves.note`) — wird beim ersten
+  Hochladen automatisch mit dem Spielnamen befüllt, danach vom Nutzer frei
+  editierbar. Ein erneuter Upload überschreibt die Notiz **nicht** mehr.
+- **Papierkorb statt Sofort-Löschen**: "In Papierkorb" setzt nur
+  `saves.deleted_at`, Storage/Verlauf bleiben erhalten. Im Papierkorb
+  (Toggle pro Spiel) lässt sich wiederherstellen oder endgültig löschen.
+  Einträge älter als `TRASH_RETENTION_DAYS` (7 Tage) werden beim nächsten
+  Öffnen der App automatisch endgültig gelöscht (`purgeExpiredTrash()` in
+  `SaveManager.tsx`) — es gibt bewusst **keinen Server-Cronjob** dafür, um
+  keine zusätzliche Infrastruktur zu brauchen. Das heißt: Wird die App
+  länger nicht geöffnet, bleiben abgelaufene Papierkorb-Einträge bis zum
+  nächsten Öffnen liegen (zählen bis dahin auch gegen das Speicherkontingent).
+- **Duplikat-Erkennung**: Vor jedem Upload wird ein SHA-256-Hash der Datei
+  berechnet. Ist er identisch mit dem aktuell aktiven Stand (gleiche Größe
+  + gleicher Hash), passiert nichts — kein neuer Verlaufseintrag, kein
+  Storage-Traffic.
+- **Geräte-Kennung**: Beim ersten Upload fragt die App einmalig (via
+  `window.prompt`, siehe `src/lib/device.ts`) nach einem Namen für das
+  aktuelle Gerät, gespeichert in `localStorage`. Wird bei jedem Upload als
+  `updated_by_device` mitgeschrieben, damit die Konfliktwarnung sagt
+  "aktualisiert von AYN Thor" statt nur "von einem anderen Gerät".
+- **Speicherplatz-Anzeige** (`src/components/StorageUsage.tsx`): zeigt
+  genutzten vs. verfügbaren Speicher (`subscriptions.max_storage_bytes`,
+  Free-Tier-Default 200 MB, automatisch bei Registrierung angelegt).
+  Rechnet aktive Saves + Papierkorb + kompletten Verlauf mit ein, da all
+  das im Storage-Bucket Platz belegt.
+- **Passwort-Reset**: "Passwort vergessen?"-Link ruft
+  `resetPasswordForEmail` auf; der Link in der E-Mail führt zurück auf die
+  App, die den `PASSWORD_RECOVERY`-Auth-Event erkennt und ein Formular für
+  ein neues Passwort zeigt (`src/app/page.tsx`).
+- **Explizit NICHT gebaut**: automatischer Hintergrund-Sync (z. B. ein
+  Watcher, der einen lokalen Batocera-Ordner beobachtet und automatisch
+  hochlädt). Das ist technisch eine eigenständige native/CLI-Anwendung
+  außerhalb eines Browsers und kein Feature, das in dieser Next.js-Web-App
+  umsetzbar ist — bräuchte ein separates Projekt, das `performUpload()`
+  aus `saveUpload.ts` als Bibliothek wiederverwenden könnte.
 - `src/components/GameList.tsx` existiert im Code, ist aber aktuell
   **nirgends eingebunden** (kein Import in `page.tsx`/`SaveManager.tsx`).
   Gedacht offenbar als "alle meine Saves auf einen Blick"-Übersicht mit
@@ -73,12 +113,19 @@ kann sie von überall wieder herunterladen.
   `.env.local`. Kein npm-Script dafür hinterlegt, manuell ausführen:
   `npx tsx scripts/importGames.ts`
 
-## Datenbank-Schema (aus dem Code erschlossen)
+## Datenbank-Schema
 
-Es liegt **keine SQL-Migrationsdatei im Repo** – das folgende Schema ist aus
-den tatsächlichen Supabase-Queries im Code rekonstruiert und sollte vor
-produktivem Einsatz gegen den echten Supabase-Stand geprüft/ergänzt werden
-(insbesondere Row-Level-Security-Policies!).
+Die SQL-Migrationen liegen unter `supabase/migrations/` (bereits live auf
+Supabase angewendet). **Wichtig:** Nicht jede Spalte in der DB stammt aus
+einer Migration in diesem Repo — im Verlauf der Entwicklung sind mehrfach
+Spalten/Tabellen aufgetaucht, die extern (vermutlich über eine parallele
+Claude-Code- oder Studio-Session direkt gegen Supabase) angelegt wurden,
+bevor der passende Code oder eine Migrationsdatei dafür existierte
+(`file_hash`, `updated_by_device`, `deleted_at` auf `saves`;
+`save_detection_profiles`; `subscriptions`). Bei Unsicherheit über den
+aktuellen Schema-Stand: über den Supabase-Connector `execute_sql` gegen
+`information_schema.columns` prüfen, nicht auf die Migrationsdateien
+alleine verlassen.
 
 **`platforms`**
 | Spalte | Typ (vermutet) |
@@ -114,6 +161,9 @@ produktivem Einsatz gegen den echten Supabase-Stand geprüft/ergänzt werden
 | `detection_reasons` | text[], nullable |
 | `uploaded_at` | timestamptz (nur von `GameList.tsx` gelesen — Default `now()` vermutet) |
 | `updated_at` | timestamptz, wird per DB-Trigger automatisch bei jedem Update gesetzt (siehe Migration) — Basis für die Konfliktwarnung |
+| `file_hash` | text, nullable — SHA-256 der Datei, für Duplikat-Erkennung + Integritätscheck beim Download |
+| `updated_by_device` | text, nullable — Geräte-Name aus `localStorage` (siehe `src/lib/device.ts`) |
+| `deleted_at` | timestamptz, nullable — Papierkorb-Flag; `null` = aktiv, gesetzt = im Papierkorb |
 
 **`save_versions`** (Verlaufstabelle, siehe Migration)
 | Spalte | Typ |
@@ -128,9 +178,20 @@ produktivem Einsatz gegen den echten Supabase-Stand geprüft/ergänzt werden
 | `file_name` | text |
 | `detected_platform` / `detected_format` / `detection_confidence` / `detection_reasons` | wie bei `saves` |
 | `created_at` | timestamptz, Default `now()` |
+| `file_hash` | text, nullable — SHA-256 dieser Version |
+| `device_label` | text, nullable — entspricht `saves.updated_by_device`, hier nur anders benannt |
 
-Die SQL-Migrationen liegen unter `supabase/migrations/` und sind bereits
-live auf dem Supabase-Projekt angewendet (Stand: aktuelles Repo).
+**`subscriptions`** (jetzt aktiv genutzt für die Speicherplatz-Anzeige)
+| Spalte | Typ |
+|---|---|
+| `user_id` | uuid/PK, FK → `auth.users.id` |
+| `tier` | text, Default `'free'` |
+| `max_slots` | int, Default `2` — **wird vom Code aktuell nicht gelesen**, die 2-Slot-Grenze ist weiterhin hart in `SlotView.tsx` + per CHECK-Constraint auf `saves.slot` kodiert |
+| `max_storage_bytes` | bigint, Default `209715200` (200 MB) — wird von `StorageUsage.tsx` gelesen |
+| `started_at` | timestamptz, Default `now()` |
+
+Wird per DB-Trigger automatisch bei jeder Neuregistrierung angelegt
+(`handle_new_user_subscription()`, siehe Migration `0004`).
 
 **Tatsächlich verifizierter DB-Stand (direkt per Supabase-Connector geprüft,
 nicht nur aus dem Code geraten):**
@@ -144,22 +205,20 @@ nicht nur aus dem Code geraten):**
   `games.json` zentral importierte Spiele enthält.
 - `platforms` hatte RLS aktiviert, aber **keine einzige Policy** → war
   dadurch für niemanden außer der Service-Role lesbar. Betrifft keinen
-  aktuellen Code-Pfad (das Frontend liest Plattformen über `games.platform`,
-  nicht über die `platforms`-Tabelle direkt), Policy trotzdem nachgezogen
-  in `supabase/migrations/0003_platforms_policy_and_docs.sql`.
+  aktuellen Code-Pfad, Policy trotzdem nachgezogen in
+  `supabase/migrations/0003_platforms_policy_and_docs.sql`.
 - Storage-Bucket `saves` ist privat, mit Policies für SELECT/INSERT/DELETE
   **und UPDATE** (Update-Policy war ursprünglich vergessen — ohne sie
   schlägt jeder `upload(..., { upsert: true })` auf einen bereits
-  existierenden Pfad fehl, z. B. "Ersetzen" eines Slots oder das
-  Zurückschreiben beim Wiederherstellen. Siehe
+  existierenden Pfad fehl. Siehe
   `supabase/migrations/0002_storage_objects_allow_update.sql`).
-- Es existiert außerdem eine `save_detection_profiles`-Tabelle (Migration
+- `save_detection_profiles` existiert weiterhin (Migration
   `add_save_detection_profiles`, nicht in diesem Repo enthalten, offenbar
-  direkt in Supabase Studio erstellt) und eine `subscriptions`-Tabelle mit
-  `tier`/`max_slots` (Default: `free`/`2`) — beide existieren in der DB,
-  werden aber vom aktuellen Frontend-Code **nicht** verwendet. Direkt in
-  der DB per `COMMENT ON TABLE` dokumentiert (siehe Migration `0003`),
-  damit das nicht wieder in Vergessenheit gerät.
+  direkt in Supabase Studio erstellt), wird aber vom Frontend-Code
+  weiterhin **nicht** verwendet (siehe `COMMENT ON TABLE` aus Migration
+  `0003`). `subscriptions` wird inzwischen für `max_storage_bytes`
+  aktiv genutzt (Speicherplatz-Anzeige) — `max_slots` bleibt weiterhin
+  ungenutzt, die 2-Slot-Grenze ist bewusst hart kodiert.
 
 ## Entwicklung
 

@@ -8,6 +8,27 @@ Datenbank-Schema (aus dem Code rekonstruiert) und offene Punkte stehen in
 `README.md` — dort zuerst nachlesen, bevor Annahmen über Tabellen/Spalten
 getroffen werden.
 
+## ⚠️ Es arbeitet vermutlich noch jemand/etwas anderes parallel an diesem Projekt
+
+Mehrfach beobachtet: Code-Dateien und DB-Spalten sind zwischen zwei
+Arbeitsschritten in derselben Konversation verändert bzw. neu aufgetaucht,
+ohne dass diese Session sie angelegt hat (z. B. `saves.file_hash`,
+`saves.updated_by_device`, `saves.deleted_at`,
+`save_versions.device_label` — allesamt bereits in der DB vorhanden, bevor
+der zugehörige Code hier geschrieben wurde; außerdem einmal unbenutzte
+Dateien `Toast.tsx`/`useToast.ts`, die ein anderer Versuch derselben
+Toast-Idee gewesen sein dürften). Das deutet auf eine parallele Session
+(vermutlich Claude Code direkt gegen Supabase/GitHub) hin, die an
+ähnlichen oder denselben Features arbeitet.
+
+**Praktische Konsequenz**: Vor dem Bauen eines Features immer zuerst
+prüfen, ob es nicht schon (teilweise) existiert — Code-Dateibaum UND
+echten DB-Stand (`information_schema.columns` per Supabase-Connector), da
+diese auseinanderlaufen können. Bei Namenskonflikten (z. B.
+`updated_by_device` vs. `device_label` für dasselbe Konzept in zwei
+Tabellen) die bereits vorhandenen Namen übernehmen statt eigene neue
+einzuführen.
+
 ## Wichtige Hinweise, bevor du Code änderst
 
 - **`supabase/migrations/` enthält nur die Migrationen, die über diese
@@ -57,6 +78,19 @@ getroffen werden.
   nicht über `alert()`. Neue Fehlerfälle sollten diesen Hook nutzen.
   `confirm()` für Ja/Nein-Entscheidungen (Löschen, Überschreiben) bleibt
   bewusst nativ — dafür ist das Toast-System nicht gedacht.
+- **Papierkorb statt Hard-Delete**: "Löschen" in `SlotView.tsx` ruft
+  `softDeleteSave()` auf (setzt nur `deleted_at`). `fetchSaves()` filtert
+  bereits `deleted_at is null` — bei neuen Queries auf `saves` diesen
+  Filter nicht vergessen, sonst tauchen gelöschte Saves wieder auf.
+  Endgültiges Löschen läuft über `permanentlyDeleteSave()`.
+  `purgeExpiredTrash()` wird beiläufig beim Laden von `SaveManager.tsx`
+  aufgerufen — es gibt bewusst keinen Server-Cronjob dafür.
+- **Duplikat-Erkennung + Geräte-Kennung + Prüfsumme** laufen alle über
+  `performUpload()` in `saveUpload.ts` (SHA-256 via `computeFileHash()`,
+  Geräte-Name via `src/lib/device.ts`). Nicht separat nachbauen.
+- **`subscriptions.max_storage_bytes`** wird jetzt aktiv von
+  `StorageUsage.tsx` gelesen. `subscriptions.max_slots` bleibt bewusst
+  ungenutzt (2-Slot-Grenze ist hart kodiert, siehe oben).
 - Vor dem Abschluss einer Änderung immer `npm run lint` und
   `npx tsc --noEmit` laufen lassen; beides muss sauber durchlaufen.
 

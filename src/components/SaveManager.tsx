@@ -7,6 +7,8 @@ import PlatformSelector from "@/components/PlatformSelector";
 import GameSelector from "@/components/GameSelector";
 import SlotView from "@/components/SlotView";
 import QuickUpload from "@/components/QuickUpload";
+import StorageUsage from "@/components/StorageUsage";
+import { purgeExpiredTrash } from "@/lib/saveUpload";
 
 
 type Game = {
@@ -60,6 +62,15 @@ export default function SaveManager() {
 
     loadPlatforms();
 
+    // Beiläufige Bereinigung abgelaufener Papierkorb-Einträge (siehe
+    // TRASH_RETENTION_DAYS in saveUpload.ts) - es gibt keinen Server-
+    // Cronjob dafür, das passiert nur wenn die App geöffnet wird.
+    supabase.auth.getUser().then(({ data: { user } }) => {
+      if (user) {
+        purgeExpiredTrash(user.id);
+      }
+    });
+
   }, []);
 
 
@@ -90,6 +101,8 @@ export default function SaveManager() {
       <h1 className="text-3xl font-bold mt-10">
         Meine Save Cloud
       </h1>
+
+      <StorageUsage />
 
       <QuickUpload onUploaded={handleQuickUploaded} />
 
